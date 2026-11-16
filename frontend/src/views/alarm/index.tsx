@@ -75,12 +75,27 @@ export default function AlarmView() {
         method: 'POST',
         body: JSON.stringify({ action }),
       })
-      if (!response.ok) {
-        throw new Error('流告警规则动作未生效，请稍后重试')
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || '流告警规则动作未生效，请稍后重试')
       }
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '流告警规则操作失败')
+    }
+  }
+
+  async function triggerCheck(row: Row) {
+    setErrorMessage('')
+    try {
+      const response = await request(`${ENDPOINT}/${row.id}/trigger-check`, { method: 'POST' })
+      const payload = await response.json()
+      if (!response.ok) {
+        throw new Error(payload.message || '告警触发校验失败')
+      }
+      setErrorMessage(payload.message)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '告警触发校验失败')
     }
   }
 
@@ -142,6 +157,9 @@ export default function AlarmView() {
                     {action}
                   </button>
                 ))}
+                <button className="link" type="button" onClick={() => void triggerCheck(row)}>
+                  触发校验（批次水位）
+                </button>
               </td>
             </tr>
           ))}

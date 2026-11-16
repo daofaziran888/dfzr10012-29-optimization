@@ -40,12 +40,17 @@ const stats = [
 ]
 
 type Row = Record<string, string | number | null>
+type BatchRecord = Record<string, string | number | unknown>
 
 export default function WatermarkView() {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
+  const [batchRows, setBatchRows] = useState<BatchRecord[]>([])
+  const [batchNo, setBatchNo] = useState('')
+  const [expectedVersion, setExpectedVersion] = useState('')
+  const [remark, setRemark] = useState('')
   const filterFields = useMemo(() => columns.slice(0, 3), [])
 
   const reload = useCallback(async () => {
@@ -64,9 +69,26 @@ export default function WatermarkView() {
     }
   }, [filters])
 
+  const reloadBatches = useCallback(async () => {
+    try {
+      const response = await request(`${ENDPOINT}/batch-watermarks`)
+      if (!response.ok) {
+        throw new Error('批次水位数据记录读取失败')
+      }
+      const payload = await response.json()
+      setBatchRows(payload.items ?? [])
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '批次水位数据记录读取失败')
+    }
+  }, [])
+
   useEffect(() => {
     void reload()
   }, [reload])
+
+  useEffect(() => {
+    void reloadBatches()
+  }, [reloadBatches])
 
   async function runAction(action: string, row: Row) {
     setErrorMessage('')
@@ -81,6 +103,33 @@ export default function WatermarkView() {
       await reload()
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '水位线管理操作失败')
+    }
+  }
+
+  async function syncBatch() {
+    setErrorMessage('')
+    if (!expectedVersion.trim()) {
+      setErrorMessage('同步写入批次水位必须带入版本号 expected_version')
+      return
+    }
+    try {
+      const response = await request(`${ENDPOINT}/batch-watermarks/sync`, {
+        method: 'POST',
+        body: JSON.stringify({
+          values: {
+            batch_no: batchNo.trim(),
+            expected_version: Number(expectedVersion.trim()),
+            批次备注: remark.trim(),
+          },
+        }),
+      })
+      const payload = await response.json()
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || '同步写入未生效，请确认版本号')
+      }
+      await reloadBatches()
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : '批次水位同步写入失败')
     }
   }
 
@@ -109,6 +158,64 @@ export default function WatermarkView() {
           </article>
         ))}
       </div>
+
+      <form
+        className="filter-bar"
+        onSubmit={(event) => {
+          event.preventDefault()
+          void syncBatch()
+        }}
+      >
+        <label className="filter-item">
+          <span>同步批次编号</span>
+          <input value={batchNo} placeholder="如 batch-29" onChange={(event) => setBatchNo(event.target.value)} />
+        </label>
+        <label className="filter-item">
+          <span>带入版本号</span>
+          <input value={expectedVersion} placeholder="读取记录后填入当前版本号" onChange={(event) => setExpectedVersion(event.target.value)} />
+        </label>
+        <label className="filter-item">
+          <span>批次备注（白名单字段）</span>
+          <input value={remark} placeholder="仅备注可跨模块写入" onChange={(event) => setRemark(event.target.value)} />
+        </label>
+        <button className="btn primary" type="submit">按版本号同步写入批次水位</button>
+      </form>
+
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>批次编号</th>
+            <th>版本号</th>
+            <th>批次状态</th>
+            <th>已完成采集器</th>
+            <th>失败项</th>
+            <th>续做位置</th>
+            <th>批次备注</th>
+          </tr>
+        </thead>
+        <tbody>
+          {batchRows.map((row) => (
+            <tr key={String(row.id)}>
+              <td>{String(row.批次编号 ?? '—')}</td>
+              <td>{String(row.版本号 ?? '—')}</td>
+              <td>{String(row.批次状态 ?? '—')}</td>
+              <td>{Array.isArray(row.已完成采集器) ? (row.已完成采集器 as string[]).join('、') : '—'}</td>
+              <td>
+                {Array.isArray(row.失败项) && (row.失败项 as Array<Record<string, string>>).length
+                  ? (row.失败项 as Array<Record<string, string>>).map((item) => item.采集器编号).join('、')
+                  : '—'}
+              </td>
+              <td>{String(row.续做位置 ?? '—')}</td>
+              <td>{String(row.批次备注 || '—')}</td>
+            </tr>
+          ))}
+          {batchRows.length === 0 && (
+            <tr>
+              <td className="empty-state" colSpan={7}>暂无跨模块批次水位数据记录</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
 
       <form className="filter-bar" onSubmit={(event) => { event.preventDefault(); void reload() }}>
         {filterFields.map((field) => (

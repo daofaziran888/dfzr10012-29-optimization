@@ -58,6 +58,15 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message=message, entry=entry)
 
 
+@router.post("/{entry_id}/trigger-check", response_model=ActionResult)
+def trigger_check(entry_id: int) -> ActionResult:
+    """告警规则触发前校验：监控指标处于生效批次暂停水位时不得触发，只认当前生效批次记录。"""
+    blocked, message = service.trigger_check(entry_id)
+    if blocked is None and "可正常触发" not in message:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=blocked is None, message=message, entry=blocked)
+
+
 @router.get("/export")
 def export_entries() -> dict[str, Any]:
     """导出流告警规则清单：返回当前过滤条件下的全量数据。"""

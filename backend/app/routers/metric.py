@@ -30,6 +30,51 @@ def list_entries(
     return PageResult(items=items, total=total, page=page, size=size)
 
 
+# 固定路径必须声明在 /{entry_id} 之前，否则会被动态路径吞掉
+@router.get("/batch-watermarks", response_model=PageResult[dict])
+def list_batch_watermarks() -> PageResult[dict]:
+    """查看批次水位数据记录：可核对已完成采集器、失败项与续做位置。"""
+    items = service.list_batch_watermarks()
+    return PageResult(items=items, total=len(items), page=1, size=len(items) or 1)
+
+
+@router.post("/batch-pause", response_model=ActionResult)
+def pause_batch(payload: EntryPayload) -> ActionResult:
+    """整组暂停一批指标采集器并写入批次水位数据记录。
+
+    入参（values）：
+    - batch_no：批次编号，如 batch-29，同批次全链路只有一条记录；
+    - collector_nos：本次整组处理的采集器编号列表；
+    - expected_version：可选，续做时带入消费侧版本号做乐观锁校验；
+    - simulate_failed：可选，模拟写入失败的采集器编号，用于失败恢复核对。
+    """
+    values = payload.values
+    batch_no = str(values.get("batch_no") or "").strip()
+    collector_nos = values.get("collector_nos") or []
+    if not isinstance(collector_nos, list):
+        return ActionResult(ok=False, message="collector_nos 必须是采集器编号数组，整组一次提交")
+    expected_version = values.get("expected_version")
+    simulate_failed = values.get("simulate_failed") or []
+    if not isinstance(simulate_failed, list):
+        return ActionResult(ok=False, message="simulate_failed 必须是采集器编号数组")
+    record, message = service.pause_batch(
+        batch_no,
+        [str(no) for no in collector_nos],
+        expected_version=int(expected_version) if expected_version is not None else None,
+        simulate_failed=[str(no) for no in simulate_failed],
+    )
+    if record is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=record)
+
+
+@router.get("/export")
+def export_entries() -> dict[str, Any]:
+    """导出流作业指标采集清单：返回当前过滤条件下的全量数据。"""
+    items, total = service.list_entries(page=1, size=10000)
+    return {"module": "metric", "total": total, "items": items}
+
+
 @router.get("/{entry_id}", response_model=dict)
 def get_entry(entry_id: int) -> dict:
     """读取单条指标采集器明细；不存在时给出可读的错误说明。"""
@@ -56,10 +101,3 @@ def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
-
-
-@router.get("/export")
-def export_entries() -> dict[str, Any]:
-    """导出流作业指标采集清单：返回当前过滤条件下的全量数据。"""
-    items, total = service.list_entries(page=1, size=10000)
-    return {"module": "metric", "total": total, "items": items}

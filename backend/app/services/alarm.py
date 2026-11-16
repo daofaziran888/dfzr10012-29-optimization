@@ -1,8 +1,14 @@
-"""流告警规则业务规则：状态流转、字段校验与筛选口径都收在这里。"""
+"""流告警规则业务规则：状态流转、字段校验与筛选口径都收在这里。
+
+批次水位与单个采集器暂停状态冲突时，告警侧只能使用当前生效的批次水位数据记录：
+监控指标（采集器编号）落在生效暂停批次里的规则，既不能启用、也不能触发，
+避免一边暂停批次一边继续触发规则。
+"""
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.batch_watermark import batch_watermark_service
 from app.store import store
 
 MODULE = "alarm"
@@ -55,7 +61,35 @@ class AlarmService:
         target = ACTION_RULES[action]
         if target not in STATUS_ORDER:
             return None, f"目标状态「{target}」不在允许的状态序列里"
+        if action == "启用告警":
+            blocked = self.evaluate_rule(str(entry.get("监控指标", "")))
+            if blocked is not None:
+                return None, (
+                    f"监控指标 {entry.get('监控指标')} 已被生效批次水位 {blocked['批次编号']} "
+                    f"（版本号 {blocked['版本号']}）暂停，规则不得启用或触发"
+                )
         entry["status"] = target
         entry["pending"] = target != STATUS_ORDER[-1]
         entry["abnormal"] = action in NEGATIVE_ACTIONS
         return entry, f"告警规则已{action}"
+
+    def evaluate_rule(self, metric_name: str) -> dict[str, Any] | None:
+        """告警触发前的批次水位校验：返回生效批次水位则必须拦截，返回 None 才允许触发。
+
+        只采用当前生效（已提交、未关闭）的批次水位数据记录；已关闭批次不再拦截。
+        """
+        return batch_watermark_service.active_record_for_metric(metric_name)
+
+    def trigger_check(self, entry_id: int) -> tuple[dict[str, Any] | None, str]:
+        """模拟一次告警规则触发处理，校验是否与生效批次水位冲突。"""
+        entry = store.find(MODULE, entry_id)
+        if entry is None:
+            return None, f"告警规则 {entry_id} 不存在或已归档"
+        blocked = self.evaluate_rule(str(entry.get("监控指标", "")))
+        if blocked is not None:
+            return blocked, (
+                f"规则 {entry.get('规则编号')} 未触发：监控指标 {entry.get('监控指标')} "
+                f"处于批次 {blocked['批次编号']} 的生效暂停水位（版本号 {blocked['版本号']}），"
+                "批次暂停期间不得继续触发规则"
+            )
+        return None, f"规则 {entry.get('规则编号')} 当前无生效批次水位冲突，可正常触发"
